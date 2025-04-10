@@ -132,45 +132,60 @@ def draw_bboxes(img, bboxes, img_size=(256, 256)):
             cv2.LINE_AA
         )
 
-def extract_reasoning_sections(raw_text):
-    """Extract main sections from the raw output text."""
-    sections = {}
+def load_step_reasoning(episode_id, step_idx):
+    """Load reasoning for a specific step from the reasoning text file."""
+    # Build the path to the reasoning file
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    reasoning_file = os.path.join(base_dir, f"reasoning_{episode_id}.txt")
     
-    # Try to extract overview section
-    if "Overview of the Task" in raw_text:
-        sections["Overview"] = raw_text.split("Overview of the Task")[1].split("Reasoning for Each Trajectory Step")[0].strip()
+    # Check if the file exists
+    if not os.path.exists(reasoning_file):
+        print(f"Warning: Reasoning file {reasoning_file} not found")
+        return None
     
-    # Try to extract reasoning dictionary
-    if "reasoning = {" in raw_text:
-        sections["Reasoning"] = raw_text.split("reasoning = {")[1].split("}", 1)[0].strip()
+    # Read the file and extract the reasoning for the specific step
+    with open(reasoning_file, 'r') as f:
+        content = f.read()
     
-    return sections
+    # Find the section for the requested step
+    step_pattern = f"Step {step_idx}:"
+    
+    # Split the content by step headers
+    step_sections = content.split("\nStep ")
+    
+    # Find the matching step section
+    step_content = None
+    for section in step_sections:
+        if section.startswith(f"{step_idx}:") or section.startswith(f" {step_idx}:"):
+            step_content = "Step " + section.strip()
+            break
+    
+    # If we didn't find the exact step, return a warning message
+    if step_content is None:
+        print(f"Warning: Step {step_idx} not found in reasoning file")
+        return f"Step {step_idx} reasoning not available"
+    
+    return step_content
 
-def create_text_image(raw_text, metadata, img_size=(480, 640)):
-    """Create image with formatted text."""
+def create_text_image(step_reasoning, metadata, img_size=(480, 640)):
+    """Create image with formatted step reasoning text."""
     height, width = img_size
     
     # Create blank white image
     text_img = np.ones((height, width, 3), dtype=np.uint8) * 255
     
-    # Extract instruction and episode ID
-    title = f"Episode {metadata['episode_id']}: {metadata['language_instruction']}"
-    
-    # Extract sections from the text
-    sections = extract_reasoning_sections(raw_text)
-    
-    # Format sections for display
-    formatted_text = title + "\n\n"
-    
-    if "Overview" in sections:
-        # Extract first few paragraphs of overview
-        overview = sections["Overview"].split("\n\n")[0]
-        formatted_text += "Overview:\n" + overview + "\n\n"
-    
-    if "Reasoning" in sections:
-        # Extract reasoning for first few steps
-        reasoning_lines = sections["Reasoning"].split("\n")[:5]
-        formatted_text += "Step-by-step reasoning (first steps):\n" + "\n".join(reasoning_lines)
+    # Format the step reasoning for display
+    if step_reasoning:
+        # Extract just the content without the "Step X:" header
+        if "Step " in step_reasoning:
+            # Remove the "Step X:" line
+            lines = step_reasoning.split('\n')
+            step_reasoning = '\n'.join(lines[1:])
+        
+        # Create a formatted display string with just the reasoning content
+        formatted_text = step_reasoning.strip()
+    else:
+        formatted_text = "No step-specific reasoning available."
     
     # Convert to PIL Image for text drawing
     pil_img = Image.fromarray(text_img)
@@ -245,7 +260,6 @@ def visualize_ecot_annotation(json_path, tfrecord_path, output_dir, step_idx=0):
     # Extract relevant data
     features = data['features']
     metadata = data['metadata']
-    raw_text = data.get('raw_output', '')
     episode_id = metadata['episode_id']
     
     # Extract images from TFRecord
@@ -275,8 +289,11 @@ def visualize_ecot_annotation(json_path, tfrecord_path, output_dir, step_idx=0):
     # Visualize single step
     vis_img = visualize_single_step(image, gripper_pos, objects, step_idx, move_primitive)
     
-    # Create text image
-    text_img = create_text_image(raw_text, metadata)
+    # Get step-specific reasoning from text file
+    step_reasoning = load_step_reasoning(episode_id, step_idx)
+    
+    # Create text image with step-specific reasoning
+    text_img = create_text_image(step_reasoning, metadata)
     
     # Combine images horizontally
     # Ensure both images have the same height

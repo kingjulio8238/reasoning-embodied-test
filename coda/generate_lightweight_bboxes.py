@@ -8,8 +8,20 @@ import numpy as np
 import torch
 import gc
 import matplotlib.pyplot as plt
+import logging
 from PIL import Image
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('bboxes_debug.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore")
 
@@ -176,18 +188,35 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gpu", type=int, default=0, help="GPU ID to use")
     parser.add_argument("--result-path", default="./lightweight_bridge_bboxes", help="Path to save results")
-    parser.add_argument("--data-path", type=str, default="/home/ubuntu/embodied-CoT/data/bridge/bridge_dataset-train.tfrecord-00002-of-01024", 
+    parser.add_argument("--data-path", type=str, default="/home/ubuntu/reasoning-embodied-test/data/bridge/bridge_dataset-train.tfrecord-00002-of-01024", 
                        help="Path to the TFRecord dataset")
     parser.add_argument("--debug", action="store_true", help="Save debug images with bounding boxes")
     parser.add_argument("--box-threshold", type=float, default=0.25, help="Box confidence threshold")
     parser.add_argument("--text-threshold", type=float, default=0.15, help="Text confidence threshold")
     parser.add_argument("--batch-size", type=int, default=5, help="Batch size for processing images")
+    parser.add_argument("--max-episodes", type=int, default=None, help="Maximum number of episodes to process")
     
     args = parser.parse_args()
+    
+    # Log all arguments for debugging
+    logger.info(f"Starting with args: {vars(args)}")
+    logger.info(f"CUDA_VISIBLE_DEVICES env var: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
+    
+    # Check GPU availability
+    logger.info(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        logger.info(f"Number of GPUs: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
     
     # Create result directory if it doesn't exist
     os.makedirs(args.result_path, exist_ok=True)
     result_json_path = os.path.join(args.result_path, "lightweight_bridge_bboxes.json")
+    
+    # Log memory status before starting
+    if torch.cuda.is_available():
+        logger.info(f"Initial GPU memory allocated: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
+        logger.info(f"Initial GPU memory reserved: {torch.cuda.memory_reserved()/1024**2:.2f} MB")
     
     # Create debug directory if needed
     if args.debug:
@@ -197,34 +226,48 @@ def main():
         debug_dir = None
     
     # Load the dataset
-    print("Loading data...")
-    dataset = load_dataset(args.data_path)
-    print("Done.")
+    logger.info("Loading data...")
+    try:
+        dataset = load_dataset(args.data_path)
+        logger.info("Dataset loaded successfully.")
+    except Exception as e:
+        logger.error(f"Failed to load dataset: {e}")
+        return
     
     # Set device
-    device = f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    device_str = f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Using device: {device_str}")
     
     # Load Grounding DINO model
-    print(f"Loading Grounding DINO...")
+    logger.info(f"Loading Grounding DINO...")
     try:
+        start_time = time.time()
         # Try to load a more memory-efficient model
         dino_model_id = "IDEA-Research/grounding-dino-tiny"
         processor = AutoProcessor.from_pretrained(dino_model_id, size={"shortest_edge": 224, "longest_edge": 224})
-        model = AutoModelForZeroShotObjectDetection.from_pretrained(dino_model_id).to(device)
-    except:
-        # Fall back to the base model if tiny is not available
-        print("Tiny model not found, using base model instead.")
-        dino_model_id = "IDEA-Research/grounding-dino-base"
-        processor = AutoProcessor.from_pretrained(dino_model_id, size={"shortest_edge": 224, "longest_edge": 224})
-        model = AutoModelForZeroShotObjectDetection.from_pretrained(dino_model_id).to(device)
-    
-    print("Model loaded.")
+        model = AutoModelForZeroShotObjectDetection.from_pretrained(dino_model_id).to(device_str)
+        logger.info(f"Model loaded in {time.time() - start_time:.2f} seconds.")
+        if torch.cuda.is_available():
+            logger.info(f"After model load - GPU memory allocated: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
+    except Exception as e:
+        logger.error(f"Error loading tiny model: {e}")
+        try:
+            # Fall back to the base model if tiny is not available
+            logger.info("Tiny model not found, using base model instead.")
+            dino_model_id = "IDEA-Research/grounding-dino-base"
+            processor = AutoProcessor.from_pretrained(dino_model_id, size={"shortest_edge": 224, "longest_edge": 224})
+            model = AutoModelForZeroShotObjectDetection.from_pretrained(dino_model_id).to(device_str)
+            if torch.cuda.is_available():
+                logger.info(f"After base model load - GPU memory allocated: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
+        except Exception as e:
+            logger.error(f"Failed to load both models: {e}")
+            return
     
     # Set detection thresholds
     BOX_THRESHOLD = args.box_threshold
     TEXT_THRESHOLD = args.text_threshold
     BATCH_SIZE = args.batch_size
+    logger.info(f"Batch size: {BATCH_SIZE}, Box threshold: {BOX_THRESHOLD}, Text threshold: {TEXT_THRESHOLD}")
     
     # Results storage
     results_json = {}
@@ -232,6 +275,12 @@ def main():
     # Process each episode
     num_episodes = 0
     for ep_idx, example_proto in enumerate(dataset):
+        # Add check for max episodes
+        if args.max_episodes is not None and num_episodes >= args.max_episodes:
+            logger.info(f"Reached maximum number of episodes ({args.max_episodes}), stopping.")
+            break
+            
+        logger.info(f"Starting episode {ep_idx}, memory: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
         try:
             # Parse the episode data
             parsed_data = parse_sequence_features(example_proto)
@@ -273,7 +322,7 @@ def main():
                     processor=processor,
                     batch_images=batch_images,
                     prompt=detection_prompt,
-                    device=device,
+                    device=device_str,
                     box_threshold=BOX_THRESHOLD,
                     text_threshold=TEXT_THRESHOLD,
                     debug=args.debug,
@@ -285,9 +334,11 @@ def main():
                 # Add batch results to step results
                 step_results.extend(batch_results)
                 
-                # Free memory
+                # Free memory - log before and after
+                logger.info(f"  Before cleanup - Memory: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
                 torch.cuda.empty_cache()
                 gc.collect()
+                logger.info(f"  After cleanup - Memory: {torch.cuda.memory_allocated()/1024**2:.2f} MB")
             
             # Make sure all values are JSON serializable
             episode_data = {
