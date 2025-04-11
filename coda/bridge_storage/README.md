@@ -33,7 +33,7 @@ python analyze.py --split train --end-index 1
 python analyze.py --split val --end-index 4
 ```
 
-## Detailed Usage
+## Usage
 
 ### Download Script
 
@@ -82,32 +82,6 @@ python analyze.py --split train --end-index 1
 # Analyze with custom directory
 python analyze.py --local-dir my_data --split train --end-index 1
 ```
-
-### Programmatic Usage
-
-```python
-from loader import BridgeDatasetLoader
-
-# Initialize loader
-loader = BridgeDatasetLoader()
-
-# Download files
-files = loader.download_dataset(split="train", start_index=0, end_index=1)
-
-# Get dataset info
-info = loader.get_dataset_info()
-
-# Inspect a file
-loader.inspect_file("data/bridge/train/bridge_dataset-train.tfrecord-00000-of-01024")
-```
-
-## Features
-
-- Simple file-based caching (skips re-downloading existing files)
-- Progress tracking during downloads
-- Basic file verification
-- Dataset statistics and analysis
-- Feature inspection with human-readable output
 
 ## Directory Structure
 
