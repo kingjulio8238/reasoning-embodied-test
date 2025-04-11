@@ -3,6 +3,7 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 import sys
+import datetime
 
 # Add parent directory to path to import primitive_movements
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -74,6 +75,7 @@ def extract_state_and_actions(dataset, feature_description):
     
     return np.array(states), np.array(actions)
 
+#TODO: just highlight/count total number of steps
 def generate_movement_primitives(states, actions):
     """Generate movement primitives from state and action data."""
     movement_primitives = []
@@ -88,100 +90,171 @@ def generate_movement_primitives(states, actions):
     
     return movement_primitives
 
-def visualize_movements(states, movement_primitives):
-    """Visualize the movement primitives."""
-    # Plot the trajectory in 3D space
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
+def visualize_episode(states, actions, episode_idx, movement_primitives=None, output_dir="episode_visualizations"):
+    """Visualize a single episode's trajectory and movements."""
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create figure with two subplots
+    fig = plt.figure(figsize=(15, 6))
+    
+    # 3D trajectory plot
+    ax1 = fig.add_subplot(121, projection='3d')
     
     # Extract position data (assuming first 3 dimensions are x, y, z)
     x = states[:, 0]
     y = states[:, 1]
     z = states[:, 2]
     
-    ax.plot(x, y, z, 'b-', alpha=0.5)
-    ax.scatter(x, y, z, c=range(len(x)), cmap='viridis')
+    # Plot trajectory
+    ax1.plot(x, y, z, 'b-', alpha=0.5, label='Trajectory')
+    ax1.scatter(x, y, z, c=range(len(x)), cmap='viridis', s=20)
+    
+    # Add start and end points
+    ax1.scatter(x[0], y[0], z[0], c='green', s=100, label='Start')
+    ax1.scatter(x[-1], y[-1], z[-1], c='red', s=100, label='End')
     
     # Add labels and title
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_title('Trajectory with Movement Primitives')
+    ax1.set_xlabel('X')
+    ax1.set_ylabel('Y')
+    ax1.set_zlabel('Z')
+    ax1.set_title(f'Episode {episode_idx} Trajectory')
+    ax1.legend()
     
-    plt.savefig('trajectory_with_primitives.png')
-    plt.close()
+    # Movement primitive plot
+    if movement_primitives:
+        ax2 = fig.add_subplot(122)
+        primitive_counts = {}
+        for desc, _ in movement_primitives:
+            if desc in primitive_counts:
+                primitive_counts[desc] += 1
+            else:
+                primitive_counts[desc] = 1
+        
+        ax2.bar(primitive_counts.keys(), primitive_counts.values())
+        ax2.set_xlabel('Movement Primitive')
+        ax2.set_ylabel('Frequency')
+        ax2.set_title(f'Episode {episode_idx} Movement Primitives')
+        plt.xticks(rotation=45, ha='right')
     
-    # Plot movement primitive frequency
-    primitive_counts = {}
-    for desc, _ in movement_primitives:
-        if desc in primitive_counts:
-            primitive_counts[desc] += 1
-        else:
-            primitive_counts[desc] = 1
-    
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.bar(primitive_counts.keys(), primitive_counts.values())
-    ax.set_xlabel('Movement Primitive')
-    ax.set_ylabel('Frequency')
-    ax.set_title('Movement Primitive Distribution')
-    plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
-    plt.savefig('primitive_distribution.png')
+    # Save with episode number padded with zeros for proper sorting
+    plt.savefig(os.path.join(output_dir, f'episode_{episode_idx:03d}_analysis.png'))
+    plt.close()
+
+def get_dataset_path():
+    #Note that this is just one specific example 
+    """Get the path to the TFRecord dataset."""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(project_root, "../data/bridge/train/bridge_dataset-train.tfrecord-00005-of-01024")
+
+def get_feature_description():
+    """Define the feature description for the dataset."""
+    return {
+        'steps/observation/state': tf.io.FixedLenSequenceFeature([7], tf.float32, allow_missing=True),
+        'steps/action': tf.io.FixedLenSequenceFeature([7], tf.float32, allow_missing=True),
+        'steps/observation/image_0': tf.io.FixedLenSequenceFeature([], tf.string, allow_missing=True),
+        'steps/observation/image_1': tf.io.FixedLenSequenceFeature([], tf.string, allow_missing=True),
+        'steps/observation/image_2': tf.io.FixedLenSequenceFeature([], tf.string, allow_missing=True),
+        'steps/observation/image_3': tf.io.FixedLenSequenceFeature([], tf.string, allow_missing=True),
+        'steps/language_instruction': tf.io.FixedLenSequenceFeature([], tf.string, allow_missing=True),
+        'steps/language_embedding': tf.io.FixedLenSequenceFeature([512], tf.float32, allow_missing=True),
+        'steps/is_first': tf.io.FixedLenSequenceFeature([], tf.int64, allow_missing=True),
+        'steps/is_last': tf.io.FixedLenSequenceFeature([], tf.int64, allow_missing=True),
+        'steps/is_terminal': tf.io.FixedLenSequenceFeature([], tf.int64, allow_missing=True),
+        'steps/reward': tf.io.FixedLenSequenceFeature([], tf.float32, allow_missing=True),
+        'steps/discount': tf.io.FixedLenSequenceFeature([], tf.float32, allow_missing=True),
+        'episode_metadata/has_image_0': tf.io.FixedLenFeature([], tf.int64),
+        'episode_metadata/has_image_1': tf.io.FixedLenFeature([], tf.int64),
+        'episode_metadata/has_image_2': tf.io.FixedLenFeature([], tf.int64),
+        'episode_metadata/has_image_3': tf.io.FixedLenFeature([], tf.int64),
+        'episode_metadata/has_language': tf.io.FixedLenFeature([], tf.int64),
+        'episode_metadata/episode_id': tf.io.FixedLenFeature([], tf.int64),
+        'episode_metadata/file_path': tf.io.FixedLenFeature([], tf.string)
+    }
+
+def process_dataset(dataset, feature_description, num_examples=100):
+    """Process the dataset and extract state and action data."""
+    parsed_dataset = dataset.map(lambda x: decode_example(x, feature_description))
+    
+    all_states = []
+    all_actions = []
+    episode_states = []
+    episode_actions = []
+    
+    for example in parsed_dataset.take(num_examples):
+        state_sequence = example['steps/observation/state'].numpy()
+        action_sequence = example['steps/action'].numpy()
+        
+        # Store complete sequences for each episode
+        episode_states.append(state_sequence)
+        episode_actions.append(action_sequence)
+        
+        # Also store flattened for overall analysis
+        all_states.extend(state_sequence)
+        all_actions.extend(action_sequence)
+    
+    return np.array(all_states), np.array(all_actions), episode_states, episode_actions
+
+def analyze_and_visualize(states, actions, episode_states, episode_actions, tfrecord_path):
+    """Analyze the data and generate visualizations."""
+    print(f"\nProcessed {len(episode_states)} episodes")
+    print(f"Total steps across all episodes: {len(states)}")
+    print(f"State shape: {states.shape}")
+    print(f"Action shape: {actions.shape}")
+    
+    # Create directory based on TFRecord file name
+    file_name = os.path.basename(tfrecord_path)
+    output_dir = f"visualizations_{file_name.replace('.tfrecord', '')}"
+    print(f"\nSaving visualizations to directory: {output_dir}")
+    
+    # Generate movement primitives for each episode
+    for i, (ep_states, ep_actions) in enumerate(zip(episode_states, episode_actions)):
+        print(f"\nAnalyzing Episode {i+1}...")
+        # print(f"Steps in episode: {len(ep_states)}")
+        
+        # Generate primitives for this episode
+        movement_primitives = generate_movement_primitives(ep_states, ep_actions)
+        
+        # Visualize this episode
+        visualize_episode(ep_states, ep_actions, i+1, movement_primitives, output_dir)
+        
+        # Print primitive summary
+        print(f"Movement primitives in episode {i+1}:")
+        primitive_counts = {}
+        for desc, _ in movement_primitives:
+            if desc in primitive_counts:
+                primitive_counts[desc] += 1
+            else:
+                primitive_counts[desc] = 1
+        for primitive, count in primitive_counts.items():
+            print(f"  {primitive}: {count}")
+    
+    print(f"\nVisualizations saved in: {output_dir}")
+    print("Files are named as: episode_XXX_analysis.png where XXX is the episode number")
 
 def main():
-    # Update the path to use the absolute path
-    # Option 1: Use absolute path from project root
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tfrecord_path = os.path.join(project_root, "data/bridge/bridge_dataset-train.tfrecord-00002-of-01024")
-    
-    # Option 2: Make sure the path is correct based on your current working directory
-    # If the script is run from the project root directory:
-    # tfrecord_path = "data/bridge/bridge_dataset-train.tfrecord-00002-of-01024"
-    
-    # Print the path for debugging
+    # Get dataset path
+    tfrecord_path = get_dataset_path()
     print(f"Looking for dataset at: {tfrecord_path}")
     
-    # Check if the file exists
+    # Check if file exists
     if not os.path.exists(tfrecord_path):
         print(f"Error: File not found at {tfrecord_path}")
-        print("Please check the path and make sure the file exists.")
-        
-        # Option 3: Try to find the file in the directory structure
-        for root, dirs, files in os.walk(project_root):
-            for file in files:
-                if "bridge_dataset-train.tfrecord" in file:
-                    potential_path = os.path.join(root, file)
-                    print(f"Found a potential match at: {potential_path}")
-        
         return
     
-    # Step 1: Explore the dataset structure
+    # Explore dataset structure
     explore_dataset_structure(tfrecord_path)
     
-    # After exploring, uncomment and modify the following code based on the actual structure
+    # Get feature description
+    feature_description = get_feature_description()
     
-    # # Step 2: Define the feature description based on exploration
-    # feature_description = {
-    #     'observation/state': tf.io.FixedLenFeature([STATE_DIM], tf.float32),
-    #     'action': tf.io.FixedLenFeature([ACTION_DIM], tf.float32),
-    #     # Add other features as needed
-    # }
+    # Load and process dataset
+    dataset = load_dataset(tfrecord_path)
+    states, actions, episode_states, episode_actions = process_dataset(dataset, feature_description)
     
-    # # Step 3: Extract state and action data
-    # dataset = load_dataset(tfrecord_path)
-    # states, actions = extract_state_and_actions(dataset, feature_description)
-    
-    # # Step 4: Generate movement primitives
-    # movement_primitives = generate_movement_primitives(states, actions)
-    
-    # # Step 5: Analyze and visualize the results
-    # print(f"Total movement primitives generated: {len(movement_primitives)}")
-    # visualize_movements(states, movement_primitives)
-    
-    # # Print the first few primitives
-    # print("\nSample movement primitives:")
-    # for i, (desc, _) in enumerate(movement_primitives[:10]):
-    #     print(f"{i+1}. {desc}")
+    # Analyze and visualize results
+    analyze_and_visualize(states, actions, episode_states, episode_actions, tfrecord_path)
 
 if __name__ == "__main__":
     main() 

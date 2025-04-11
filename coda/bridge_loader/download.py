@@ -1,6 +1,9 @@
 import argparse
 from loader import BridgeDatasetLoader
 
+# To run from the Coda dir: python bridge_loader/download.py (no specifiaciton you run everything)
+# If you want to specify which type of data, use the --split flag (takes train or val)
+
 
 def main():
     parser = argparse.ArgumentParser(description='Download and inspect Bridge Dataset files')
