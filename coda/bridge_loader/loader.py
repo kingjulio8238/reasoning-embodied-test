@@ -9,7 +9,7 @@ class BridgeDatasetLoader:
     """Loader for the Bridge v2 dataset."""
     
     def __init__(self, base_url: str = "https://rail.eecs.berkeley.edu/datasets/bridge_release/data/tfds/bridge_dataset/1.0.0/",
-                 local_dir: str = "data/bridge", chunk_size: int = 8192, max_retries: int = 3):
+                 local_dir: str = "../data/bridge", chunk_size: int = 8192, max_retries: int = 3):
         """
         Initialize the dataset loader.
         
