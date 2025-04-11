@@ -1,198 +1,164 @@
-#!/usr/bin/env python3
+# Have to run this script for a step specified 
+# python coda/parse_reasoning.py --input /home/ubuntu/reasoning-embodied-test/coda/ecot_annotations/ecot_13.json --output coda/reasoning_13.txt --step 5
+
+
 """
-Parse reasoning from ECoT annotations to extract structured data from tags.
-This script processes the raw LLM output and extracts tagged content.
+Parse reasoning from ECoT annotations using OpenAI's GPT models.
+This script processes the raw LLM output and formats it in a consistent structure.
 """
 
-import re
 import json
 import argparse
 import os
-from enum import Enum
-from typing import Dict, List, Optional, Tuple, Any
+import sys
+from typing import Dict, Any, Optional
+from openai import OpenAI
 
+def get_openai_client(api_key=None):
+    """Initialize OpenAI client with API key."""
+    key = api_key or os.environ.get("OPENAI_API_KEY")
+    if not key:
+        print("Error: OpenAI API key is required. Please provide it as an argument or set the OPENAI_API_KEY environment variable.")
+        sys.exit(1)
+    return OpenAI(api_key=key)
 
-class CotTag(Enum):
-    """Tags used in chain-of-thought reasoning."""
-    TASK = "task"
-    PLAN = "plan"
-    SUBTASK = "subtask"
-    SUBTASK_REASONING = "subtask_reason"
-    MOVE = "move"
-    MOVE_REASONING = "move_reason"
-    VISIBLE_OBJECTS = "visible_objects"
-    GRIPPER_POSITION = "gripper_position"
-    ACTION = "action"
-
-
-def get_cot_tags_list():
-    """Get list of all CoT tags."""
-    return [tag.value for tag in CotTag]
-
-
-def extract_tags_from_text(text: str, tag_name: str) -> List[Tuple[int, str]]:
+def parse_with_gpt(client, raw_output: str, step: Optional[int] = None) -> str:
     """
-    Extract all instances of a specific tag from text.
+    Parse the raw reasoning output using GPT-4o-mini.
     
     Args:
-        text: Raw text containing tags
-        tag_name: Name of the tag to extract
+        client: OpenAI client
+        raw_output: Raw reasoning text from the JSON file
+        step: Specific step to format (if None, formats all steps)
         
     Returns:
-        List of tuples containing (step_number, tag_content)
+        Formatted reasoning text
     """
-    # Look for special Python dictionary format like: 
-    # reasoning_dict = { 0: "<task>text</task> <plan>text</plan> ...", 1: "..." }
-    dict_regex = r'(?:reasoning|trajectory_reasoning|reasoning_dict)\s*=\s*\{(.*?)\}'
-    dict_match = re.search(dict_regex, text, re.DOTALL | re.IGNORECASE)
-    
-    if dict_match:
-        dict_content = dict_match.group(1)
+    if not raw_output or raw_output.strip() == "":
+        return "No raw output found to parse."
+
+    # Construct the prompt based on whether a specific step is requested
+    if step is not None:
+        prompt = f"""
+        Extract and format the reasoning for step {step} from the following chain-of-thought reasoning output.
         
-        # Get all entries in the dictionary (step: "content")
-        entries_regex = r'(\d+)\s*:\s*"(.*?)",?\s*(?=\d+\s*:|$)'
-        entries = re.findall(entries_regex, dict_content, re.DOTALL)
+        IMPORTANT GUIDELINES:
+        1. Never use phrases like "the robot" - use neutral or task-focused terms like "the device," "the gripper," "it," or "the system"
+        2. Match exact wording and capitalization from the source text
+        3. Ensure object descriptions are precise and identical to the source
+        4. Match coordinates and formatting in "VISIBLE OBJECTS" and "GRIPPER POSITION" exactly
+        5. Do not add additional details or omit required information
+        6. Keep all formatting consistent with the source
+
+        Format the output using EXACTLY these section headers:
+        TASK: [task description]
+        PLAN: [plan description]
+        SUBTASK REASONING: [subtask reasoning]
+        SUBTASK: [subtask description]
+        MOVE REASONING: [move reasoning]
+        MOVE: [move description]
+        VISIBLE OBJECTS: [visible objects with coordinates]
+        GRIPPER POSITION: [gripper coordinates]
+
+        For example, the formatting should look EXACTLY like:
+        TASK: Place the watermelon on the towel.
+
+        PLAN: Move to the watermelon, grasp it, move to the towel, release the watermelon.
+
+        SUBTASK REASONING: The watermelon is grasped and needs to be moved to the towel.
+
+        SUBTASK: Move to the towel.
+
+        MOVE REASONING: The towel is to the right of the watermelon, so the gripper needs to move right to reach it.
+
+        MOVE: Move right.
+
+        VISIBLE OBJECTS: a pink watermelon [65, 84, 135, 110], a pink watermelon [66, 83, 135, 109], the scene [4, 0, 243, 249], a yellow spoon the spoon [14, 120, 97, 150], the towel [156, 99, 230, 158], a red mushroom and the mushroom is on the table near the [107, 150, 153, 203]
+
+        GRIPPER POSITION: [113, 91]
+
+        Extract the exact information without any modifications, additions, or omissions, and format it exactly as shown above.
+
+        Here's the raw reasoning output:
         
-        results = []
-        for step, content in entries:
-            # Extract the specific tag from each entry
-            tag_regex = rf'<\s*{tag_name}\s*>(.*?)<\s*/\s*{tag_name}\s*>'
-            tag_match = re.search(tag_regex, content, re.DOTALL)
-            
-            if tag_match:
-                results.append((int(step), tag_match.group(1).strip()))
+        {raw_output}
+        """
+    else:
+        prompt = f"""
+        Extract and format the main task and plan from the following chain-of-thought reasoning output.
         
-        return results
-    
-    # Fallback to other extraction methods if dictionary format isn't found
-    # Direct pattern matching for tags associated with step numbers
-    pattern = rf'(\d+)\s*:(?:(?!\d+\s*:).)*?<\s*{tag_name}\s*>(.*?)<\s*/\s*{tag_name}\s*>'
-    
+        IMPORTANT GUIDELINES:
+        1. Never use phrases like "the robot" - use neutral or task-focused terms like "the device," "the gripper," "it," or "the system"
+        2. Match exact wording and capitalization from the source text
+        3. Do not add additional details or omit required information
+        4. Keep all formatting consistent with the source
+        
+        Format as shown below with each section clearly labeled:
+        
+        TASK: [task description]
+        PLAN: [plan description]
+        
+        Extract the exact information without any modifications, additions, or omissions, and format it exactly as shown above.
+        
+        Here's the raw reasoning output:
+        
+        {raw_output}
+        """
+
+    # Call the OpenAI API
     try:
-        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-        return [(int(step), content.strip()) for step, content in matches]
+        response = client.chat.completions.create(
+            model="gpt-4o-mini-2024-07-18",
+            messages=[
+                {"role": "system", "content": "You are an expert at precisely extracting and formatting chain-of-thought reasoning from robotic task instructions. Extract the relevant sections exactly as they appear in the source, without any modifications."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,  # Use deterministic output for exact matching
+            max_tokens=1000
+        )
+        
+        formatted_result = response.choices[0].message.content.strip()
+        
+        # Additional verification pass to ensure "the robot" is not present
+        if "the robot" in formatted_result.lower():
+            # Make a second call to clean up any remaining references
+            cleanup_prompt = f"""
+            The following formatted text still contains references to "the robot", which must be replaced with neutral terms like "the device," "the gripper," "it," or "the system".
+            
+            Please correct these references while maintaining exact formatting and all other content:
+            
+            {formatted_result}
+            """
+            
+            cleanup_response = client.chat.completions.create(
+                model="gpt-4o-mini-2024-07-18",
+                messages=[
+                    {"role": "system", "content": "You are an expert at precisely correcting and formatting text. Fix references to 'the robot' while maintaining everything else exactly as provided."},
+                    {"role": "user", "content": cleanup_prompt}
+                ],
+                temperature=0.0,
+                max_tokens=1000
+            )
+            
+            return cleanup_response.choices[0].message.content.strip()
+            
+        return formatted_result
+    
     except Exception as e:
-        print(f"Error extracting tag '{tag_name}': {e}")
-        return []
+        print(f"Error calling OpenAI API: {e}")
+        return f"Error parsing output: {e}"
 
-
-def extract_all_tags_from_text(text: str) -> Dict[str, Dict[int, str]]:
+def parse_ecot_file(file_path: str, client, step: Optional[int] = None) -> Dict[str, Any]:
     """
-    Extract all tagged content from the text.
-    
-    Args:
-        text: Raw text containing tags
-        
-    Returns:
-        Dictionary mapping tags to dictionaries of {step_number: content}
-    """
-    result = {}
-    
-    # Process each tag
-    for tag in get_cot_tags_list():
-        tag_matches = extract_tags_from_text(text, tag)
-        
-        # Create nested dictionary for this tag
-        if tag_matches:
-            result[tag] = {step: content for step, content in tag_matches}
-    
-    return result
-
-
-def extract_high_level_overview(text: str) -> Dict[str, str]:
-    """
-    Extract high-level overview sections from the reasoning output.
-    
-    Args:
-        text: Raw LLM output text
-        
-    Returns:
-        Dictionary with overview sections
-    """
-    overview = {}
-    
-    # First, try to divide the text into sections
-    # Look for the part before "reasoning for each step" or similar sections
-    overview_section = text
-    reasoning_section_markers = [
-        "reasoning for each step", 
-        "list the reasonings for each step",
-        "reasoning for each trajectory step",
-        "step-by-step reasoning",
-        "reasoning = {"
-    ]
-    
-    # Try to separate overview from step-by-step reasoning
-    for marker in reasoning_section_markers:
-        if marker.lower() in text.lower():
-            parts = re.split(re.escape(marker), text, flags=re.IGNORECASE, maxsplit=1)
-            if len(parts) > 1:
-                overview_section = parts[0]
-                break
-    
-    # Extract task overview
-    task_patterns = [
-        r"(?:^|\n)#+\s*(?:Task|Overview|Description)[^\n]*\n+(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)The task is to(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)In this task,(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)This task requires(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)The robot needs to(.*?)(?=\n#+|\n\d+:|$)"
-    ]
-    
-    for pattern in task_patterns:
-        match = re.search(pattern, overview_section, re.DOTALL | re.IGNORECASE)
-        if match and match.group(1).strip():
-            overview['task_overview'] = match.group(1).strip()
-            break
-    
-    # Extract high-level movements
-    movement_patterns = [
-        r"(?:^|\n)#+\s*(?:High-Level|Movements|Steps)[^\n]*\n+(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)(?:The )?high-level movements(?: executed)? (?:are|include|consist)[^\n]*\n+(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)To accomplish this task, the robot(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)The robot executes the following movements:(.*?)(?=\n#+|\n\d+:|$)"
-    ]
-    
-    for pattern in movement_patterns:
-        match = re.search(pattern, overview_section, re.DOTALL | re.IGNORECASE)
-        if match and match.group(1).strip():
-            overview['high_level_movements'] = match.group(1).strip()
-            break
-    
-    # Extract plan
-    plan_patterns = [
-        r"(?:^|\n)#+\s*(?:Plan|Solution)[^\n]*\n+(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)The plan for the solution(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)The solution plan(.*?)(?=\n#+|\n\d+:|$)",
-        r"(?:^|\n)To solve this task, the plan is(.*?)(?=\n#+|\n\d+:|$)"
-    ]
-    
-    for pattern in plan_patterns:
-        match = re.search(pattern, overview_section, re.DOTALL | re.IGNORECASE)
-        if match and match.group(1).strip():
-            overview['plan'] = match.group(1).strip()
-            break
-    
-    # If we couldn't extract a task overview, use the first paragraph
-    if 'task_overview' not in overview and overview_section.strip():
-        paragraphs = overview_section.split('\n\n')
-        for paragraph in paragraphs:
-            if paragraph.strip() and not paragraph.startswith('#'):
-                overview['task_overview'] = paragraph.strip()
-                break
-    
-    return overview
-
-
-def parse_ecot_file(file_path: str) -> Dict[str, Any]:
-    """
-    Parse an ECoT JSON file to extract structured reasoning.
+    Parse an ECoT JSON file using GPT.
     
     Args:
         file_path: Path to the ECoT JSON file
+        client: OpenAI client
+        step: Specific step to format (if None, formats overview)
         
     Returns:
-        Dictionary with parsed content
+        Dictionary with parsed content and formatted result
     """
     try:
         with open(file_path, 'r') as f:
@@ -204,113 +170,38 @@ def parse_ecot_file(file_path: str) -> Dict[str, Any]:
         if not raw_output:
             print(f"Warning: No raw_output found in {file_path}")
             print("Available keys:", data.keys())
-            return {}
+            return {"error": "No raw output found in file"}
         
-        # Print the first 200 characters to debug
-        print(f"Parsing file: {file_path}")
-        print(f"Raw output starts with: {raw_output[:100]}...")
-        print(f"Raw output length: {len(raw_output)} characters")
+        # Use GPT to parse the raw output
+        formatted_result = parse_with_gpt(client, raw_output, step)
         
-        # Parse the results
-        result = {
-            'metadata': data.get('metadata', {}),
-            'high_level': extract_high_level_overview(raw_output),
-            'step_reasoning': extract_all_tags_from_text(raw_output),
-            'features': data.get('features', {})
+        # Return both the formatted result and metadata
+        return {
+            "metadata": data.get('metadata', {}),
+            "formatted_result": formatted_result
         }
-        
-        # Show what was extracted
-        print(f"Extracted high-level sections: {list(result['high_level'].keys())}")
-        if result['step_reasoning']:
-            tags_extracted = list(result['step_reasoning'].keys())
-            print(f"Extracted tags: {tags_extracted}")
-            steps_count = len(next(iter(result['step_reasoning'].values())))
-            print(f"Extracted reasoning for {steps_count} steps")
-        else:
-            print("No step reasoning extracted")
-        
-        return result
     
     except Exception as e:
         print(f"Error parsing file {file_path}: {e}")
         import traceback
         traceback.print_exc()
-        return {}
-
-
-def format_parsed_reasoning(parsed_data: Dict[str, Any], step: Optional[int] = None) -> str:
-    """
-    Format the parsed reasoning into a readable string.
-    
-    Args:
-        parsed_data: Parsed reasoning data
-        step: Specific step to format (if None, formats overview)
-        
-    Returns:
-        Formatted string representation
-    """
-    result = []
-    
-    # Add metadata
-    metadata = parsed_data.get('metadata', {})
-    episode_id = metadata.get('episode_id', 'Unknown')
-    instruction = metadata.get('language_instruction', 'No instruction provided')
-    
-    result.append(f"Episode {episode_id}: {instruction}")
-    result.append("=" * 50)
-    
-    # If no specific step is requested, show the overview
-    if step is None:
-        # Add high-level overview
-        high_level = parsed_data.get('high_level', {})
-        if 'task_overview' in high_level:
-            result.append("\n🎯 TASK OVERVIEW")
-            result.append("-" * 30)
-            result.append(high_level['task_overview'])
-            result.append("")
-        
-        if 'high_level_movements' in high_level:
-            result.append("\n🔄 HIGH-LEVEL MOVEMENTS")
-            result.append("-" * 30)
-            result.append(high_level['high_level_movements'])
-            result.append("")
-        
-        if 'plan' in high_level:
-            result.append("\n📋 SOLUTION PLAN")
-            result.append("-" * 30)
-            result.append(high_level['plan'])
-            result.append("")
-    
-    # If a specific step is requested, show that step's reasoning
-    else:
-        step_reasoning = parsed_data.get('step_reasoning', {})
-        
-        result.append(f"\n⚙️ STEP {step} REASONING")
-        result.append("-" * 30)
-        
-        # Display each tag's content for this step
-        for tag in get_cot_tags_list():
-            if tag in step_reasoning and step in step_reasoning[tag]:
-                content = step_reasoning[tag][step]
-                tag_label = tag.upper().replace('_', ' ')
-                result.append(f"\n📌 {tag_label}:")
-                result.append(content)
-        
-    return "\n".join(result)
-
+        return {"error": str(e)}
 
 def main():
-    parser = argparse.ArgumentParser(description='Parse ECoT reasoning annotations.')
+    parser = argparse.ArgumentParser(description='Parse ECoT reasoning annotations using GPT.')
     parser.add_argument('--input', '-i', type=str, required=True, 
                         help='Path to ECoT annotation JSON file or directory')
     parser.add_argument('--output', '-o', type=str, default=None,
                         help='Path to save parsed output (if not specified, prints to console)')
     parser.add_argument('--step', '-s', type=int, default=None,
                         help='Specific step to extract reasoning for')
-    parser.add_argument('--format', '-f', choices=['text', 'json'], default='text',
-                        help='Output format (text or json)')
+    parser.add_argument('--api-key', '-k', type=str, default=None,
+                        help='OpenAI API key (or set OPENAI_API_KEY environment variable)')
     
     args = parser.parse_args()
+    
+    # Initialize OpenAI client
+    client = get_openai_client(args.api_key)
     
     # Process a single file or a directory
     if os.path.isdir(args.input):
@@ -321,47 +212,31 @@ def main():
         all_results = {}
         for file_path in files:
             episode_id = os.path.basename(file_path).replace('ecot_', '').replace('.json', '')
-            parsed = parse_ecot_file(file_path)
+            parsed = parse_ecot_file(file_path, client, args.step)
             all_results[episode_id] = parsed
         
         # Save or print results
-        if args.format == 'json':
-            if args.output:
-                with open(args.output, 'w') as f:
-                    json.dump(all_results, f, indent=2)
-            else:
-                print(json.dumps(all_results, indent=2))
+        if args.output:
+            with open(args.output, 'w') as f:
+                json.dump(all_results, f, indent=2)
         else:
             # Print text representation of the first file or a specific episode
             if all_results:
                 first_key = next(iter(all_results))
-                formatted = format_parsed_reasoning(all_results[first_key], args.step)
-                
-                if args.output:
-                    with open(args.output, 'w') as f:
-                        f.write(formatted)
-                else:
-                    print(formatted)
+                print(all_results[first_key].get("formatted_result", "No formatted result available"))
     
     else:
         # Process a single file
-        parsed = parse_ecot_file(args.input)
+        parsed = parse_ecot_file(args.input, client, args.step)
         
-        if args.format == 'json':
-            if args.output:
-                with open(args.output, 'w') as f:
+        if args.output:
+            with open(args.output, 'w') as f:
+                if isinstance(parsed.get("formatted_result"), str):
+                    f.write(parsed["formatted_result"])
+                else:
                     json.dump(parsed, f, indent=2)
-            else:
-                print(json.dumps(parsed, indent=2))
         else:
-            formatted = format_parsed_reasoning(parsed, args.step)
-            
-            if args.output:
-                with open(args.output, 'w') as f:
-                    f.write(formatted)
-            else:
-                print(formatted)
-
+            print(parsed.get("formatted_result", "No formatted result available"))
 
 if __name__ == "__main__":
     main() 

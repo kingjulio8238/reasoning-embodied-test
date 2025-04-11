@@ -1,3 +1,5 @@
+# python coda/visualize_ecot.py --json /home/ubuntu/reasoning-embodied-test/coda/ecot_annotations/ecot_13.json --tfrecord /home/ubuntu/reasoning-embodied-test/data/bridge/bridge_dataset-train.tfrecord-00002-of-01024 --output ./visualizations --step 5
+
 import os
 import json
 import numpy as np
@@ -134,38 +136,58 @@ def draw_bboxes(img, bboxes, img_size=(256, 256)):
 
 def load_step_reasoning(episode_id, step_idx):
     """Load reasoning for a specific step from the reasoning text file."""
-    # Build the path to the reasoning file
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    reasoning_file = os.path.join(base_dir, f"reasoning_{episode_id}.txt")
+    # Try multiple file paths
+    possible_paths = [
+        # Current directory
+        f"coda/reasoning_{episode_id}.txt",
+        # Full path
+        f"/home/ubuntu/reasoning-embodied-test/coda/reasoning_{episode_id}.txt",
+        # Relative path
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), f"reasoning_{episode_id}.txt")
+    ]
     
-    # Check if the file exists
-    if not os.path.exists(reasoning_file):
-        print(f"Warning: Reasoning file {reasoning_file} not found")
+    # Try each possible path
+    reasoning_file = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            reasoning_file = path
+            break
+    
+    if reasoning_file is None:
+        print(f"Warning: Reasoning file not found. Tried: {possible_paths}")
         return None
     
-    # Read the file and extract the reasoning for the specific step
+    print(f"Found reasoning file: {reasoning_file}")
+    
+    # Read the file content
     with open(reasoning_file, 'r') as f:
         content = f.read()
     
-    # Find the section for the requested step
-    step_pattern = f"Step {step_idx}:"
-    
-    # Split the content by step headers
-    step_sections = content.split("\nStep ")
-    
-    # Find the matching step section
-    step_content = None
-    for section in step_sections:
-        if section.startswith(f"{step_idx}:") or section.startswith(f" {step_idx}:"):
-            step_content = "Step " + section.strip()
-            break
-    
-    # If we didn't find the exact step, return a warning message
-    if step_content is None:
-        print(f"Warning: Step {step_idx} not found in reasoning file")
-        return f"Step {step_idx} reasoning not available"
-    
-    return step_content
+    # If the file has "Step X:" format, extract the specific step
+    if content.find("Step ") >= 0:
+        # Find the section for the requested step
+        step_pattern = f"Step {step_idx}:"
+        
+        # Split the content by step headers
+        step_sections = content.split("\nStep ")
+        
+        # Find the matching step section
+        step_content = None
+        for section in step_sections:
+            if section.startswith(f"{step_idx}:") or section.startswith(f" {step_idx}:"):
+                step_content = "Step " + section.strip()
+                break
+        
+        # If we didn't find the exact step, return a warning message
+        if step_content is None:
+            print(f"Warning: Step {step_idx} not found in reasoning file")
+            return f"Step {step_idx} reasoning not available"
+        
+        return step_content
+    else:
+        # If there's no "Step X:" format, assume the entire file is for a single step
+        print(f"Using entire reasoning file content (no Step {step_idx} marker found)")
+        return content
 
 def create_text_image(step_reasoning, metadata, img_size=(480, 640)):
     """Create image with formatted step reasoning text."""
@@ -331,30 +353,42 @@ def visualize_ecot_annotation(json_path, tfrecord_path, output_dir, step_idx=0):
     
     # Create grid of images (arrange in rows of 3)
     if multi_step_imgs:
-        grid_rows = [multi_step_imgs[i:i+3] for i in range(0, len(multi_step_imgs), 3)]
-        grid_img = None
-        
-        for row in grid_rows:
-            # Ensure all images in the row have the same height
-            max_h = max(img.shape[0] for img in row)
-            resized_row = []
-            for img in row:
-                h, w = img.shape[:2]
-                if h != max_h:
-                    scale = max_h / h
-                    img = cv2.resize(img, (int(w * scale), max_h))
-                resized_row.append(img)
+        try:
+            grid_rows = [multi_step_imgs[i:i+3] for i in range(0, len(multi_step_imgs), 3)]
+            grid_img = None
+            
+            for row in grid_rows:
+                # Ensure all images in the row have the same height and width
+                # First, resize all images to the same height
+                max_h = max(img.shape[0] for img in row)
+                max_w = max(img.shape[1] for img in row)
                 
-            row_img = np.concatenate(resized_row, axis=1)
-            if grid_img is None:
-                grid_img = row_img
-            else:
-                grid_img = np.concatenate([grid_img, row_img], axis=0)
+                resized_row = []
+                for img in row:
+                    # Resize to match maximum dimensions
+                    resized = cv2.resize(img, (max_w, max_h))
+                    resized_row.append(resized)
+                    
+                row_img = np.concatenate(resized_row, axis=1)
+                
+                # Create the grid image
+                if grid_img is None:
+                    grid_img = row_img
+                else:
+                    # Ensure the current row has the same width as the grid_img
+                    if row_img.shape[1] != grid_img.shape[1]:
+                        row_img = cv2.resize(row_img, (grid_img.shape[1], row_img.shape[0]))
+                    grid_img = np.concatenate([grid_img, row_img], axis=0)
+            
+            # Save multi-step grid
+            grid_path = os.path.join(output_dir, f"{base_filename}_multi_step.jpg")
+            cv2.imwrite(grid_path, grid_img)
+            print(f"Saved multi-step visualization to {grid_path}")
         
-        # Save multi-step grid
-        grid_path = os.path.join(output_dir, f"{base_filename}_multi_step.jpg")
-        cv2.imwrite(grid_path, grid_img)
-        print(f"Saved multi-step visualization to {grid_path}")
+        except Exception as e:
+            print(f"Error creating multi-step grid: {e}")
+            import traceback
+            traceback.print_exc()
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize ECoT annotations')

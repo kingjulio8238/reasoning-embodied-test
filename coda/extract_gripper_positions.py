@@ -1,4 +1,6 @@
 # No SAM (memory efficient ; worse accuracy) 
+# python coda/extract_gripper_positions.py --gpu 0 --output-dir coda/gripper_positions --data-path /home/ubuntu/reasoning-embodied-test/data/bridge/bridge_dataset-train.tfrecord-00002-of-01024 
+# TODO: add max-epsiodes arg 
 
 import os
 import json

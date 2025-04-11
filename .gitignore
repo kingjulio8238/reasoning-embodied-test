@@ -147,3 +147,10 @@ dmypy.json
 # Caches and Datasets
 cache/
 data/
+visualizations/
+reasoning_13.txt
+ecot_annotations/
+primitive_movements_output/
+gripper_positions/
+bridge_bboxes/
+
