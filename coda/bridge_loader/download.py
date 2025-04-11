@@ -4,7 +4,7 @@ from loader import BridgeDatasetLoader
 
 def main():
     parser = argparse.ArgumentParser(description='Download and inspect Bridge Dataset files')
-    parser.add_argument('--local-dir', type=str, default='../data/bridge',
+    parser.add_argument('--local-dir', type=str, default='../../data/bridge',
                         help='Local directory to store downloaded files')
     parser.add_argument('--split', type=str, choices=['train', 'val'], default='train',
                         help='Dataset split to download')
