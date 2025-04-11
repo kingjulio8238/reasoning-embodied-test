@@ -4,23 +4,25 @@ from pathlib import Path
 from tqdm import tqdm
 import requests
 import json
+import os
 
 class BridgeDatasetLoader:
     """Loader for the Bridge v2 dataset."""
     
     def __init__(self, base_url: str = "https://rail.eecs.berkeley.edu/datasets/bridge_release/data/tfds/bridge_dataset/1.0.0/",
-                 local_dir: str = "../../data/bridge", chunk_size: int = 8192, max_retries: int = 3):
+                 local_dir: str = "~/reasoning-embodied-test/data/bridge", chunk_size: int = 8192, max_retries: int = 3):
         """
         Initialize the dataset loader.
         
         Args:
             base_url: Base URL for the dataset files
-            local_dir: Local directory to store downloaded files (default: data/bridge)
+            local_dir: Local directory to store downloaded files (default: ~/reasoning-embodied-test/data/bridge)
             chunk_size: Size of chunks for downloading files
             max_retries: Maximum number of retries for failed downloads
         """
         self.base_url = base_url
-        self.local_dir = Path(local_dir)
+        # Expand the home directory path
+        self.local_dir = Path(os.path.expanduser(local_dir))
         self.chunk_size = chunk_size
         self.max_retries = max_retries
         
