@@ -1,4 +1,4 @@
-#SAM Included - may not be needed for this task (test diff)
+# No SAM (memory efficient ; worse accuracy) 
 
 import os
 import json
@@ -9,14 +9,14 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from PIL import Image
 from tqdm import tqdm
-from transformers import SamModel, SamProcessor, pipeline
+from transformers import pipeline
 from sklearn.linear_model import RANSACRegressor
 import gc
 
 # Set constants
 IMAGE_DIMS = (256, 256)
 GRIPPER_PROMPT = "robotic gripper, robot hand, gripper"
-BATCH_SIZE = 5  # Process this many images at once to manage memory
+BATCH_SIZE = 1  # Process this many images at once
 
 def load_dataset(tfrecord_path):
     """Load the TFRecord dataset."""
@@ -28,7 +28,6 @@ def parse_sequence_features(example_proto):
     feature_description = {
         'steps/observation/image_0': tf.io.VarLenFeature(tf.string),
         'steps/observation/state': tf.io.VarLenFeature(tf.float32),
-        'steps/language_instruction': tf.io.VarLenFeature(tf.string),
         'episode_metadata/episode_id': tf.io.FixedLenFeature([1], tf.int64),
     }
     
@@ -37,166 +36,96 @@ def parse_sequence_features(example_proto):
     # Convert sparse tensors to dense
     images = tf.sparse.to_dense(parsed_features['steps/observation/image_0'])
     states = tf.sparse.to_dense(parsed_features['steps/observation/state'])
-    instructions = tf.sparse.to_dense(parsed_features['steps/language_instruction'])
     episode_id = parsed_features['episode_metadata/episode_id'][0]
     
     return {
         'images': images,
         'states': states,
-        'instructions': instructions,
         'episode_id': episode_id
     }
 
-def load_models(device, verbose=True):
-    """Load OWLv2 and SAM models."""
+def load_owlvit_model(device, verbose=True):
+    """Load OWLv2 model."""
     if verbose:
-        print("Loading OWLv2 and SAM models...")
+        print("Loading OWLv2 model...")
     
     # Load OWLv2 for zero-shot object detection
     owlv2_checkpoint = "google/owlvit-base-patch16"
     detector = pipeline(model=owlv2_checkpoint, task="zero-shot-object-detection", device=device)
     
-    # Load SAM model for segmentation
-    sam_model = SamModel.from_pretrained("facebook/sam-vit-base").to(device)
-    sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
-    
     if verbose:
-        print("Models loaded successfully!")
+        print("OWLv2 model loaded successfully!")
     
-    return detector, sam_model, sam_processor
+    return detector
 
 def get_bounding_boxes(img, detector, prompt=GRIPPER_PROMPT, threshold=0.01):
     """Get bounding boxes for the gripper using OWLv2."""
-    predictions = detector(img, candidate_labels=[prompt], threshold=threshold)
-    return predictions
-
-def get_gripper_mask(img, pred, sam_model, sam_processor, device):
-    """Generate a mask for the gripper using SAM."""
-    box = [
-        round(pred["box"]["xmin"], 2),
-        round(pred["box"]["ymin"], 2),
-        round(pred["box"]["xmax"], 2),
-        round(pred["box"]["ymax"], 2),
-    ]
-
-    inputs = sam_processor(img, input_boxes=[[[box]]], return_tensors="pt").to(device)
-
-    with torch.no_grad():
-        outputs = sam_model(**inputs)
-
-    mask = sam_processor.image_processor.post_process_masks(
-        outputs.pred_masks, inputs["original_sizes"], inputs["reshaped_input_sizes"]
-    )[0][0][0].cpu().numpy()
-
-    # Clean up to save memory
-    del inputs, outputs
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    return mask
-
-def sq(w, h):
-    """Create a grid of positions."""
-    return np.concatenate(
-        [(np.arange(w * h).reshape(h, w) % w)[:, :, None], 
-         (np.arange(w * h).reshape(h, w) // w)[:, :, None]], 
-        axis=-1
-    )
-
-def mask_to_pos_naive(mask):
-    """Convert mask to position using a naive approach."""
-    pos = sq(*IMAGE_DIMS)
-    weight = pos[:, :, 0] + pos[:, :, 1]
-    min_pos = np.argmax((weight * mask).flatten())
-
-    return min_pos % IMAGE_DIMS[0] - (IMAGE_DIMS[0] / 16), min_pos // IMAGE_DIMS[0] - (IMAGE_DIMS[0] / 24)
-
-def get_gripper_pos_raw(img, detector, sam_model, sam_processor, device):
-    """Get the gripper position from a raw image."""
-    # Convert to PIL Image if it's a numpy array
+    # Ensure the image is in PIL format
     if isinstance(img, np.ndarray):
         img = Image.fromarray(img)
     
+    predictions = detector(img, candidate_labels=[prompt], threshold=threshold)
+    return predictions
+
+def get_center_from_bbox(bbox):
+    """Get the center point of a bounding box."""
+    x_center = (bbox["xmin"] + bbox["xmax"]) / 2
+    y_center = (bbox["ymin"] + bbox["ymax"]) / 2
+    return (int(x_center), int(y_center))
+
+def get_gripper_pos_raw(img, detector):
+    """Get the gripper position from a raw image."""
     # Get bounding boxes for gripper
     predictions = get_bounding_boxes(img, detector)
 
     if len(predictions) > 0:
         # Sort predictions by score and take the highest
         predictions.sort(key=lambda x: x["score"], reverse=True)
-        mask = get_gripper_mask(img, predictions[0], sam_model, sam_processor, device)
-        pos = mask_to_pos_naive(mask)
+        pos = get_center_from_bbox(predictions[0]["box"])
+        return pos, predictions[0]
     else:
-        mask = np.zeros(IMAGE_DIMS)
-        pos = (-1, -1)
-        predictions = [None]
+        return (-1, -1), None
 
-    return (int(pos[0]), int(pos[1])), mask, predictions[0]
-
-def process_trajectory(images, states, detector, sam_model, sam_processor, device):
+def process_trajectory(images, states, detector):
     """Process an entire trajectory to get gripper positions."""
     # Get raw trajectory data
     print("Processing trajectory images...")
-    raw_trajectory = []
+    raw_positions = []
+    raw_predictions = []
     
-    # Process in batches to manage memory
-    for i in tqdm(range(0, len(images), BATCH_SIZE)):
-        batch_images = images[i:i+BATCH_SIZE]
-        batch_states = states[i:i+BATCH_SIZE]
-        
-        for img, state in zip(batch_images, batch_states):
-            pos, mask, pred = get_gripper_pos_raw(img, detector, sam_model, sam_processor, device)
-            raw_trajectory.append((pos, mask, pred, state))
+    # Process images individually to manage memory
+    for i, img in enumerate(tqdm(images)):
+        pos, pred = get_gripper_pos_raw(img, detector)
+        raw_positions.append(pos)
+        raw_predictions.append(pred)
         
         # Clean up memory
-        torch.cuda.empty_cache()
-        gc.collect()
+        if i % 5 == 0:
+            torch.cuda.empty_cache()
+            gc.collect()
     
     # Handle missing detections by filling with nearest valid positions
-    prev_found = list(range(len(raw_trajectory)))
-    next_found = list(range(len(raw_trajectory)))
-
-    prev_found[0] = 0  # First point references itself if no gripper is found
-    next_found[-1] = len(raw_trajectory) - 1  # Last point references itself if no gripper is found
-
-    # Build forward index of valid detections
-    for i in range(1, len(raw_trajectory)):
-        if raw_trajectory[i][2] is None:
-            prev_found[i] = prev_found[i - 1]
-        else:
-            prev_found[i] = i
-
-    # Build backward index of valid detections
-    for i in reversed(range(0, len(raw_trajectory) - 1)):
-        if raw_trajectory[i][2] is None:
-            next_found[i] = next_found[i + 1]
-        else:
-            next_found[i] = i
-
-    # If gripper was never found, return None
-    valid_detections = [i for i, traj in enumerate(raw_trajectory) if traj[2] is not None]
-    if not valid_detections:
+    valid_indices = [i for i, pred in enumerate(raw_predictions) if pred is not None]
+    
+    if not valid_indices:
         print("Warning: Gripper never detected in this trajectory")
         return None
-
-    # Replace the not found positions with the closest neighbor
-    filled_trajectory = []
-    for i in range(0, len(raw_trajectory)):
-        # Choose closest valid detection
-        if raw_trajectory[i][2] is None:
-            dist_to_prev = i - prev_found[i] if raw_trajectory[prev_found[i]][2] is not None else float('inf')
-            dist_to_next = next_found[i] - i if raw_trajectory[next_found[i]][2] is not None else float('inf')
-            
-            if dist_to_prev <= dist_to_next and dist_to_prev != float('inf'):
-                filled_trajectory.append(raw_trajectory[prev_found[i]])
-            elif dist_to_next != float('inf'):
-                filled_trajectory.append(raw_trajectory[next_found[i]])
-            else:
-                # If somehow there are no valid detections (shouldn't happen due to our check above)
-                filled_trajectory.append(((-1, -1), np.zeros(IMAGE_DIMS), None, raw_trajectory[i][3]))
+    
+    # Fill missing positions
+    filled_positions = []
+    for i in range(len(raw_positions)):
+        if raw_predictions[i] is not None:
+            # If we have a valid detection, use it
+            filled_positions.append(raw_positions[i])
         else:
-            filled_trajectory.append(raw_trajectory[i])
-
-    return filled_trajectory
+            # Find nearest valid detection
+            distances = [abs(i - valid_idx) for valid_idx in valid_indices]
+            nearest_valid_idx = valid_indices[np.argmin(distances)]
+            filled_positions.append(raw_positions[nearest_valid_idx])
+    
+    # Create the final trajectory with states
+    trajectory = [(pos, state) for pos, state in zip(filled_positions, states)]
+    return trajectory
 
 def apply_ransac(trajectory, debug=False):
     """Apply RANSAC to get corrected 2D positions from 3D states."""
@@ -206,7 +135,7 @@ def apply_ransac(trajectory, debug=False):
     
     # Extract 2D positions and 3D states
     pos_2d = np.array([traj[0] for traj in trajectory], dtype=np.float32)
-    pos_3d = np.array([traj[3][:3].numpy() if isinstance(traj[3], tf.Tensor) else traj[3][:3] for traj in trajectory])
+    pos_3d = np.array([traj[1][:3].numpy() if isinstance(traj[1], tf.Tensor) else traj[1][:3] for traj in trajectory])
     
     # Add homogeneous coordinates
     pos_3d_h = np.concatenate([pos_3d, np.ones_like(pos_3d[:, :1])], axis=-1)
@@ -221,8 +150,6 @@ def apply_ransac(trajectory, debug=False):
         
         if debug:
             print(f"RANSAC score: {reg.score(pos_3d_h, pos_2d_h)}")
-            print(f"Original positions shape: {pos_2d.shape}")
-            print(f"Corrected positions shape: {corrected_pos.shape}")
         
         return corrected_pos
     except Exception as e:
@@ -241,12 +168,6 @@ def visualize_trajectory(images, positions, output_path):
         # Ensure the image is a numpy array
         if isinstance(img, tf.Tensor):
             img = img.numpy()
-        
-        # Convert grayscale to RGB if needed
-        if len(img.shape) == 2:
-            img = np.stack([img, img, img], axis=-1)
-        elif img.shape[-1] == 1:
-            img = np.concatenate([img, img, img], axis=-1)
         
         # Draw position on image
         frame = cv2.circle(
@@ -270,7 +191,7 @@ def visualize_trajectory(images, positions, output_path):
     
     return frames
 
-def process_episode(episode_data, detector, sam_model, sam_processor, device, output_dir, episode_id, visualize=True):
+def process_episode(episode_data, detector, output_dir, episode_id, visualize=True):
     """Process a single episode to extract gripper positions."""
     # Extract images and states
     images_data = episode_data['images'].numpy()
@@ -292,7 +213,7 @@ def process_episode(episode_data, detector, sam_model, sam_processor, device, ou
             images.append(np.zeros((256, 256, 3), dtype=np.uint8))
     
     # Process trajectory
-    trajectory = process_trajectory(images, states, detector, sam_model, sam_processor, device)
+    trajectory = process_trajectory(images, states, detector)
     
     if trajectory is None:
         print(f"Failed to process trajectory for episode {episode_id}")
@@ -332,27 +253,22 @@ def main():
     parser.add_argument('--data-path', type=str, 
                         default='/home/ubuntu/embodied-CoT/data/bridge/bridge_dataset-train.tfrecord-00002-of-01024',
                         help='Path to the TFRecord dataset')
-    parser.add_argument('--output-dir', type=str, default='./gripper_positions',
+    parser.add_argument('--output-dir', type=str, default='./gripper_positions_light',
                         help='Directory to save outputs')
     parser.add_argument('--gpu', type=int, default=0, help='GPU ID to use')
-    parser.add_argument('--batch-size', type=int, default=5, help='Batch size for processing')
     parser.add_argument('--visualize', action='store_true', help='Generate visualization videos')
     
     args = parser.parse_args()
-    
-    # Update global batch size
-    global BATCH_SIZE
-    BATCH_SIZE = args.batch_size
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Set device
-    device = f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu"
+    device = f"cuda:{args.gpu}" if torch.cuda.is_available() and args.gpu >= 0 else "cpu"
     print(f"Using device: {device}")
     
-    # Load models
-    detector, sam_model, sam_processor = load_models(device)
+    # Load model
+    detector = load_owlvit_model(device)
     
     # Load dataset
     print(f"Loading dataset from {args.data_path}...")
@@ -371,10 +287,7 @@ def main():
             # Process the episode
             results = process_episode(
                 episode_data, 
-                detector, 
-                sam_model, 
-                sam_processor, 
-                device, 
+                detector,
                 args.output_dir, 
                 episode_id,
                 args.visualize
@@ -407,4 +320,4 @@ def main():
     print(f"Results saved to {args.output_dir}")
 
 if __name__ == "__main__":
-    main() 
+    main()  

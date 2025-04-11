@@ -272,7 +272,7 @@ def main():
             'visualize': args.debug  # Pass debug flag as visualize
         }
         
-        success = run_script('extract_gripper_lightweight.py', script_args, output_dirs['gripper'])
+        success = run_script('extract_gripper_positions.py', script_args, output_dirs['gripper'])
         pipeline_success = pipeline_success and success
     
     # Step 5: Generate ECoT annotations
