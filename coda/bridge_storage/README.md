@@ -43,7 +43,7 @@ python download.py --help
 ```
 
 Options:
-- `--local-dir`: Directory to store downloaded files (default: test_data)
+- `--local-dir`: Directory to store downloaded files (default: data/bridge)
 - `--split`: Dataset split to download (choices: train, val)
 - `--start-index`: Starting shard index (default: 0)
 - `--end-index`: Ending shard index (inclusive)
@@ -65,11 +65,11 @@ python download.py --split train --end-index 1 --inspect
 
 The analyze script (`analyze.py`) provides the following options:
 ```bash
-python download.py --helppython analyze.py --help
+python analyze.py --help
 ```
 
 Options:
-- `--local-dir`: Directory containing downloaded files (default: test_data)
+- `--local-dir`: Directory containing downloaded files (default: data/bridge)
 - `--split`: Dataset split to analyze (choices: train, val)
 - `--start-index`: Starting shard index (default: 0)
 - `--end-index`: Ending shard index (inclusive)
@@ -98,7 +98,7 @@ files = loader.download_dataset(split="train", start_index=0, end_index=1)
 info = loader.get_dataset_info()
 
 # Inspect a file
-loader.inspect_file("test_data/train/bridge_dataset-train.tfrecord-00000-of-01024")
+loader.inspect_file("data/bridge/train/bridge_dataset-train.tfrecord-00000-of-01024")
 ```
 
 ## Features
@@ -111,7 +111,7 @@ loader.inspect_file("test_data/train/bridge_dataset-train.tfrecord-00000-of-0102
 
 ## Directory Structure
 
-- `test_data/`: Default directory for downloaded files
+- `data/bridge/`: Default directory for downloaded files
   - `train/`: Training split files
   - `val/`: Validation split files
 
